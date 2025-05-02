@@ -1,5 +1,7 @@
 from PIL import Image
 import numpy as np
+import cmath
+import time
 
 def load_image(path):
     image = Image.open(path).convert("RGB")
@@ -35,8 +37,7 @@ def downsample(koef:int, Matrix):
         for i in range(0, int(w)):
             for j in range(0,int(h)):
                 downsample_matrix[i][j]=np.mean(Matrix[i*koef:(i*koef)+koef,j*koef:(j*koef)+koef])
-        return downsample_matrix
-   
+        return downsample_matrix   
 def split_block(n: int, Matrix):
     w,h = Matrix.shape
     if h % n != 0:
@@ -45,17 +46,50 @@ def split_block(n: int, Matrix):
         Matrix=np.pad(Matrix,((0,0),(0,n-(w % n))),mode='constant', constant_values=0)
 
     w,h = Matrix.shape
-    print(Matrix)
+    print(Matrix)   
     split_matrix=Matrix.reshape(h//n, n, w//n, n).transpose(0, 2, 1, 3)
 
     return(split_matrix)
 
+def fft(x: np.ndarray)-> float:
+    N=len(x)
+    if N <= 1:
+        return x
+    elif N % 2 !=0:
+
+        print("error N % 2 !=0")
+    even=fft(x[0::2])
+    odd=fft(x[1::2])
+    temp=[cmath.exp(-2j * cmath.pi * k / N)*odd[k] for k in range(len(odd))]
+    return [even[k] + temp[k] for k in range(len(odd))] + [even[k] - temp[k] for k in range(len(odd))]
+#def ifft(x:np.ndarray)-> float:
+#    for i in range(len(x)):
+#        for j in range(len(x)):
 
 
 
-        
 
 
+def fft_for_DCT(x: np.ndarray)-> float:
+    result= np.array([])
+    x=np.pad(x,(0,len(x)),mode='symmetric')
+    x=fft(x)
+    for i in range(0,int(len(x)/2)):
+        val=x[i]* cmath.exp(-1j * cmath.pi * i / (len(x)))
+        if i==0:
+            result=np.append(result,val.real*cmath.sqrt(1/(len(x)/2)))
+        else:
+            result=np.append(result,val.real*cmath.sqrt(2/(len(x)/2)))
+    return(result)
+
+
+
+def dct_2D(x: np.ndarray)-> np.ndarray:
+    for i in range(len(x)):
+        x[i]=fft_for_DCT(x[i])
+    for j in range(len(x[0])):
+        x[:,j]=fft_for_DCT(x[:,j])
+    return x
 
 
 # image = load_image("Lenna.png")
@@ -65,8 +99,3 @@ def split_block(n: int, Matrix):
 # Y, Cb, Cr= sep_matrix_ycbcr(image_ycbcr)
 # print(Y,Cb,Cr)
 
-
-a =  np.random.randint(0, 10, (10, 10))
-print(a)
-print(downsample(6,a))
-temp=split_block(8,a)
