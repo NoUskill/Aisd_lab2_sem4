@@ -2,7 +2,7 @@ from PIL import Image
 import numpy as np
 import cmath
 import time
-
+from scipy.fft import dct, idct, dctn
 def load_image(path):
     image = Image.open(path).convert("RGB")
     return np.array(image)
@@ -51,51 +51,72 @@ def split_block(n: int, Matrix):
 
     return(split_matrix)
 
-def fft(x: np.ndarray)-> float:
+def fft(x: np.ndarray):
     N=len(x)
     if N <= 1:
         return x
     elif N % 2 !=0:
-
-        print("error N % 2 !=0")
+        print("error N % 2 !=0 in fft")
     even=fft(x[0::2])
     odd=fft(x[1::2])
     temp=[cmath.exp(-2j * cmath.pi * k / N)*odd[k] for k in range(len(odd))]
-    return [even[k] + temp[k] for k in range(len(odd))] + [even[k] - temp[k] for k in range(len(odd))]
-#def ifft(x:np.ndarray)-> float:
-#    for i in range(len(x)):
-#        for j in range(len(x)):
+    return np.array([even[k] + temp[k] for k in range(len(odd))] + [even[k] - temp[k] for k in range(len(odd))])
 
 
 
 
 
-def fft_for_DCT(x: np.ndarray)-> float:
+    return x
+
+def fft_for_DCT(x: np.ndarray):
     result= np.array([])
-    x=np.pad(x,(0,len(x)),mode='symmetric')
-    x=fft(x)
-    for i in range(0,int(len(x)/2)):
-        val=x[i]* cmath.exp(-1j * cmath.pi * i / (len(x)))
-        if i==0:
-            result=np.append(result,val.real*cmath.sqrt(1/(len(x)/2)))
+    x_temp=np.pad(x,(0,len(x)),mode='symmetric')
+    x_fft=fft(x_temp)
+    N=int(len(x_fft)/2)
+    result = np.zeros(N, dtype=np.float64)
+
+    for i in range(N):
+        val = x_fft[i] * cmath.exp(-1j * cmath.pi * i / (2 * N))
+        if i == 0:
+            result[i] = (val * np.sqrt(1/N)).real*2*np.sqrt(2)
         else:
-            result=np.append(result,val.real*cmath.sqrt(2/(len(x)/2)))
+            result[i] = (val * np.sqrt(2/N)).real*2
+
     return(result)
 
 
 
-def dct_2D(x: np.ndarray)-> np.ndarray:
+def dct_2D(x: np.ndarray) -> np.ndarray:
+    x = x.copy()
     for i in range(len(x)):
-        x[i]=fft_for_DCT(x[i])
+        x[i] = fft_for_DCT(x[i])
     for j in range(len(x[0])):
-        x[:,j]=fft_for_DCT(x[:,j])
+        x[:, j] = fft_for_DCT(x[:, j])
+    return x
+
+def idct_2D(x: np.ndarray) -> np.ndarray:
+    x = x.copy()
+    for i in range(len(x)):
+        x[i] = my_idct(x[i])
+    for j in range(len(x[0])):
+        x[:,j] = my_idct(x[:,j])
     return x
 
 
-# image = load_image("Lenna.png")
-# print(image)
-# image_ycbcr=(rgb_to_ycbcr(image))
-# print(image_ycbcr)
-# Y, Cb, Cr= sep_matrix_ycbcr(image_ycbcr)
-# print(Y,Cb,Cr)
+# x = np.array([1, 2, 3, 4, 5, 6, 7, 8], dtype=np.float64)
+# x = np.array([4, 2, 2, 2, 0, 6, 7, 4], dtype=np.float64)
+# x = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.float64)
+# print("Your Arr:",x)
+# x_fft_for_DCT=fft_for_DCT(x)
+# print("Your DCT:",x_fft_for_DCT)
+# x_copy=ifft_for_IDCT(x_fft_for_DCT)
+# t_2=idct(x_fft_for_DCT)
+# print("Your IDCT:", x_copy)
+# print("SciPy IDCT:", t_2)
+# print("Ratios:",t_2/ x_copy)
+
+
+
+x_orig = np.array([1, 2, 3, 4, 5, 6, 7, 8])
+
 
