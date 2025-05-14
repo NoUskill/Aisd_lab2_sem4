@@ -7,7 +7,27 @@ import heapq
 import time
 import json
 import struct
+import matplotlib.pyplot as plt
+import zlib
+import os
+
 from scipy.fft import ifft,dct,idct, dctn,idctn
+def myfft(x):
+    N = len(x)
+    if N <= 1:
+        return x
+    if N & (N - 1) != 0:
+        next_pow2 = 1 << (N - 1).bit_length()
+        x = np.pad(x, (0, next_pow2 - N), mode='constant')
+        N = next_pow2
+    even = myfft(x[0::2])
+    odd = myfft(x[1::2])
+    result = np.zeros(N, dtype=complex)
+    for k in range(N // 2):
+        t = np.exp(-2j * np.pi * k / N) * odd[k]
+        result[k] = even[k] + t
+        result[k + N // 2] = even[k] - t
+    return result
 class JPEGCompressor:
     def __init__(self):
       
@@ -25,14 +45,14 @@ class JPEGCompressor:
         ])
         shift = np.array([0, 128, 128])
         image_ycbcr = np.round(image_rgb @ transform.T + shift, 1)
-        print(f"YCbCr: min={image_ycbcr.min()}, max={image_ycbcr.max()}, shape={image_ycbcr.shape}")
+        
         return image_ycbcr
     def sep_matrix_ycbcr(self, image_ycbcr):
 
         Y = image_ycbcr[..., 0]
         Cb = image_ycbcr[..., 1]
         Cr = image_ycbcr[..., 2]
-        print(f"Y shape={Y.shape}, Cb shape={Cb.shape}, Cr shape={Cr.shape}")
+        
         return Y, Cb, Cr
     def downsample(self, koef: int, Matrix):
 
@@ -52,7 +72,7 @@ class JPEGCompressor:
             for i in range(0, int(w)):
                 for j in range(0, int(h)):
                     downsample_matrix[i,j] = np.mean(Matrix[i*koef:(i*koef)+koef, j*koef:(j*koef)+koef])
-        print(f"Downsampled shape={downsample_matrix.shape}, min={downsample_matrix.min()}, max={downsample_matrix.max()}")
+        
         return downsample_matrix
     def split_block(self, n: int, Matrix):
 
@@ -63,91 +83,87 @@ class JPEGCompressor:
             Matrix = np.pad(Matrix, ((0, 0), (0, n - (w % n))), mode='constant', constant_values=0)
         w, h = Matrix.shape
         split_matrix = Matrix.reshape(h//n, n, w//n, n).transpose(0, 2, 1, 3)
-        print(f"Split blocks shape={split_matrix.shape}")
+        
         return split_matrix
-    def matrix_dct(self,Matrix):
-        def fft(x: np.ndarray):
-            N=len(x)
-            if N <= 1:
-                return x
-            elif N % 2 !=0:
-                print("error N % 2 !=0 in fft")
-
-            even=fft(x[0::2])
-            odd=fft(x[1::2])
-            temp=[cmath.exp(-2j * cmath.pi * k / N)*odd[k] for k in range(len(odd))]
-            return np.array([even[k] + temp[k] for k in range(len(odd))] + [even[k] - temp[k] for k in range(len(odd))])   
-        def fft_for_DCT(x: np.ndarray):
-            result= np.array([])
-            x_temp=np.pad(x,(0,len(x)),mode='symmetric')
-
-            x_fft=fft(x_temp)
-            N=int(len(x_fft)/2)
-            result = np.zeros(N, dtype=np.float64)
-
-            for i in range(N):
-                val = x_fft[i] * cmath.exp(-1j * cmath.pi * i / (2 * N))
-                if i == 0:
-                    result[i] = round((val * np.sqrt(1/N)).real*2*np.sqrt(2),2)
-                else:
-                    result[i] = round((val * np.sqrt(2/N)).real*2, 4)
-
-            return(result)
-        def dct_2D(x: np.ndarray) -> np.ndarray:
-            x = x.copy()
+    def matrix_dct(self,Matrix):    
+        def dct_1d(x):
+            N = len(x)
+            # Проверка на нулевой вектор
+            if np.all(x == 0):
+                return np.zeros(N)
+            # Шаг 1: Перестановка элементов для создания симметричного вектора
+            y = np.zeros(2 * N, dtype=x.dtype)
+            y=np.pad(x,(0,len(x)),mode='symmetric')
+            # Шаг 2: Применяем FFT
+            fft_result = myfft(y)
+            # Шаг 3: Извлекаем DCT коэффициенты
+            result = np.zeros(N)
+            for k in range(N):
+                result[k] = 2 * np.real(fft_result[k] * np.exp(-1j * np.pi * k / (2 * N)))
+            # Нормализация
+            result *= 1 / np.sqrt(2 * N)
+            result*=2
+            return result
+        def dct_2d(Matrix):
+            N=len(Matrix)
+            x=Matrix.copy()
             for i in range(len(x)):
-                x[i]=dct(x[i])
-                # x[i] = fft_for_DCT(x[i])
+                x[i] = dct_1d(x[i])
             for j in range(len(x[0])):
-                x[:, j]=dct(x[:, j])
-                # x[:, j] = fft_for_DCT(x[:, j])
+                x[:, j] = dct_1d(x[:, j])
             return x
+
         N=len(Matrix)
         for i in range(N):
             for j in range(N):
-                Matrix[i][j]=dctn(Matrix[i][j])
+                Matrix[i][j]=dct_2d(Matrix[i][j])
         return Matrix
     def matrix_idct(self, Matrix):
-        def ifft_for_IDCT(x: np.ndarray):
-            c = x.copy()
-            N = len(c)
-            c[0] *= np.sqrt(2)
-            x_temp = np.pad(c, (0, len(c)), mode='symmetric')
-            x_ifft = ifft(x_temp)
-            for i in range(len(x_ifft)):
-                x_ifft[i] = x_ifft[i] / len(x_ifft)
-            x = np.zeros(N)
-            for k in range(N):
-                val = x_ifft[k] * cmath.exp(+1j * cmath.pi * k / (2 * N)) * 2
-                x[k] = (val * np.sqrt(N) / (4 * np.sqrt(2))).real
+        def idct_1d(temp):
+            X=temp.copy()
+            N = len(X)
+            x = np.zeros(N, dtype=np.float64)
+            factor = np.pi / (2 * N)
+            X *= np.sqrt(2 / N) / 2
+            X[0]/=2
+            for n in range(N):
+                s = 0.0
+                for k in range(N):
+                    ck = 1.0
+                    s += ck * X[k] * np.cos(factor * (2 * n + 1) * k)
+                x[n] = s
+            x *= np.sqrt(2 / N)
             return x
-        def idct_2D(c: np.ndarray) -> np.ndarray:
-            x = c.copy()
-            for i in range(len(x)):
-                x[i] = idct(x[i])
-            for j in range(len(x[0])):
-                x[:, j] = idct(x[:, j])
-            return x
+        def idct_2d(matrix):
+            matrix = np.asarray(matrix, dtype=np.float64)
+            N = matrix.shape[0]
+            if matrix.shape != (N, N): print("error in idct_2d")
+
+            temp = np.zeros_like(matrix)
+            for i in range(N):
+                temp[i, :] = idct_1d(matrix[i, :])
+
+            result = np.zeros_like(matrix)
+            for j in range(N):
+                result[:, j] = idct_1d(temp[:, j])
+            return result
 
         N1, N2 = Matrix.shape[:2]
         result = np.zeros_like(Matrix)
         for i in range(N1):
             for j in range(N2):
-                result[i, j] = idctn(Matrix[i, j])
-        print(f"IDCT shape={result.shape}, min={result.min()}, max={result.max()}")
+                result[i, j] = idct_2d(Matrix[i, j])
+        
         return result
     def Quant(self, Matrix, mode: str, quality: int = 50):
         if quality<10:
             quality=10
         elif quality>100:
             quality=100
-        # Более агрессивное масштабирование для низкого качества
         scale = (100 / quality) ** 2.5 if quality < 50 else 50 / quality if quality < 100 else 1
-        # Порог для обнуления AC-коэффициентов (более высокий для Cb/Cr)
         threshold = max(1, (100 - quality) / 1) if quality < 80 else 0
         if mode in ["Cb", "Cr"]:
-            threshold *= 1.5  # Усиливаем обнуление для цветовых компонент
-
+            threshold *= 1.5
         if mode == "Y":
             LUMINANCE_QUANT_TABLE = np.array([
                 [16, 11, 10, 16, 24, 40, 51, 61],
@@ -164,12 +180,7 @@ class JPEGCompressor:
             for i in range(N1):
                 for j in range(N2):
                     result[i, j] = np.round(Matrix[i, j] / LUMINANCE_QUANT_TABLE).astype(np.int32)
-                    # Обнуляем малые AC-коэффициенты (кроме DC [0,0])
                     result[i, j, 1:, 1:][np.abs(result[i, j, 1:, 1:]) < threshold] = 0
-
-            non_zero_dc = np.sum(np.abs(result[:, :, 0, 0]) > 0)
-            non_zero_ac = np.sum(np.abs(result[:, :, 1:, 1:]) > 0)
-            print(f"Quant Y min={result.min()}, max={result.max()}, non-zero DC={non_zero_dc}, non-zero AC={non_zero_ac}")
             return result
         elif mode in ["Cb", "Cr"]:
             CHROMINANCE_QUANT_TABLE = np.array([
@@ -187,15 +198,10 @@ class JPEGCompressor:
             for i in range(N1):
                 for j in range(N2):
                     result[i, j] = np.round(Matrix[i, j] / CHROMINANCE_QUANT_TABLE).astype(np.int32)
-                    # Обнуляем малые AC-коэффициенты (кроме DC [0,0])
-                    result[i, j, 1:, 1:][np.abs(result[i, j, 1:, 1:]) < threshold] = 0
-            non_zero_dc = np.sum(np.abs(result[:, :, 0, 0]) > 0)
-            non_zero_ac = np.sum(np.abs(result[:, :, 1:, 1:]) > 0)
-            print(f"Quant {mode} min={result.min()}, max={result.max()}, non-zero DC={non_zero_dc}, non-zero AC={non_zero_ac}")
+                    result[i, j, 1:, 1:][np.abs(result[i, j, 1:, 1:]) < threshold] = 0           
             return result
         else:
-            raise ValueError("eroro")
-
+            print("error in Quant")
     def iQuant(self, Matrix, mode: str, quality: int = 50):
         
         if quality<10:
@@ -219,7 +225,7 @@ class JPEGCompressor:
             for i in range(N1):
                 for j in range(N2):
                     result[i, j] = np.round(Matrix[i, j] * LUMINANCE_QUANT_TABLE).astype(np.int32)
-            print(f"iQuant Y min={result.min()}, max={result.max()}")
+            
             return result
         elif mode in ["Cb", "Cr"]:
             CHROMINANCE_QUANT_TABLE = np.array([
@@ -237,10 +243,10 @@ class JPEGCompressor:
             for i in range(N1):
                 for j in range(N2):
                     result[i, j] = np.round(Matrix[i, j] * CHROMINANCE_QUANT_TABLE).astype(np.int32)
-            print(f"iQuant {mode} min={result.min()}, max={result.max()}")
+            
             return result
         else:
-            raise ValueError("eror")
+            print("error in iQuant")
 
     def split_DC_and_AC(self, Matrix):
         def zigzag_scan(matrix, size=8):
@@ -285,7 +291,7 @@ class JPEGCompressor:
                     list_DC.append(int(Matrix[i][j][0][0]) - temp_num)
                     temp_num = int(Matrix[i][j][0][0])
                     list_AC = np.concatenate((list_AC, zigzag_scan(Matrix[i][j])))
-        print(f"DC len={len(list_DC)}, AC len={len(list_AC)}")
+        
         return np.array(list_DC), np.array(list_AC)
     def cod_Huff_DC(self, arr_DC):
         class Huffman_root:
@@ -316,7 +322,8 @@ class JPEGCompressor:
             elif abs(arr_DC[i]) == 2:
                 arr_len.append(1)
             else:
-                num = math.ceil(math.log(abs(arr_DC[i]), 2))
+                print()
+                num = len(bin(abs(arr_DC[i]))[2:])+1
                 arr_len.append(num)
 
         tables_freq = {}
@@ -347,7 +354,7 @@ class JPEGCompressor:
             elif abs(arr_DC[i]) == 2:
                 num = 1
             else:
-                num = len(bin(abs(arr_DC[i]))[2:])
+                num = len(bin(abs(arr_DC[i]))[2:])+1
             bit_huf_cod += huf_table[str(num)]
             if num == -1:
                 bit_huf_cod += '0'
@@ -365,7 +372,7 @@ class JPEGCompressor:
                 bit_huf_cod += ''.join('1' if bit == '0' else '0' for bit in bin(abs(arr_DC[i]))[2:])
             else:
                 bit_huf_cod += bin(abs(arr_DC[i]))[2:]
-        print(f"DC Huffman code length={len(bit_huf_cod)}")
+        
         return bit_huf_cod, huf_table
     def decod_Huff_DC(self, bit_huf_cod, huf_table):
         i = 0
@@ -407,9 +414,8 @@ class JPEGCompressor:
                     temp_cod = ''
             else:
                 i += 1
-        print(f"Decoded DC len={len(decod_arr)}")
+        
         return np.array(decod_arr)
-
     def cod_Huff_AC(self,arr_ACC):
         class Huffman_root:
             def __init__(self, sim: str, freq: int):
@@ -483,7 +489,7 @@ class JPEGCompressor:
 
         tables_huf_cod = {}
         huf_table = assem_huf_table(tables_huf_cod, queue[0], "")
-        print(len(huf_table))
+        
         if len(huf_table)==1:
             huf_table={str(arr_len[0]): "1"}
         bit_huf_cod = ""
@@ -507,10 +513,9 @@ class JPEGCompressor:
             else:
                 temp_num = bin(abs(arr_AC[i][0]))[2:]
                 bit_huf_cod += temp_num
-        print(f"AC Huffman code length={len(bit_huf_cod)}")
+        
         return bit_huf_cod, huf_table
     def decod_Huff_AC(self, bit_huf_cod, huf_table):
-
         i = 0
         temp_cod = ""
         decod_arr = []
@@ -541,7 +546,7 @@ class JPEGCompressor:
                     temp_cod = ''
             else:
                 i += 1
-        print(f"Decoded AC len={len(decod_arr)}")
+        
         return np.array(decod_arr)
     def assembly_DC_and_AC(self, arr_AC, arr_DC, n=8):
         num_blocks = len(arr_DC)
@@ -586,36 +591,36 @@ class JPEGCompressor:
                             col -= 1
                 matrix[i, j] = block
                 t += 1
-        print(f"Assembled matrix shape={matrix.shape}")
+        
         return matrix
 
     def ycbcr_to_rgb_image(self, Y, Cb, Cr, output_path):
         if not (Y.shape == Cb.shape == Cr.shape):
-            raise ValueError("errir in ycbcr_to_rgb_image")
+           print("errir in ycbcr_to_rgb_image")
         height, width = Y.shape
         Y = np.clip(Y, 0, 255)
         Cb = np.clip(Cb, 0, 255)
         Cr = np.clip(Cr, 0, 255)
         ycbcr = np.stack((Y, Cb, Cr), axis=-1)
         rgb = np.zeros((height, width, 3), dtype=np.float32)
-        rgb[..., 0] = Y + 1.402 * (Cr - 128)  # Красный канал (R)
-        rgb[..., 1] = Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128)  # Зеленый канал (G)
-        rgb[..., 2] = Y + 1.772 * (Cb - 128)  # Синий канал (B)
+        rgb[..., 0] = Y + 1.402 * (Cr - 128)  
+        rgb[..., 1] = Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128)  
+        rgb[..., 2] = Y + 1.772 * (Cb - 128)  
 
-        print(rgb[0:12,0:12])
+        
         rgb = np.clip(rgb, 0, 255).astype(np.uint8)
         image = Image.fromarray(rgb, mode='RGB')
         image.save(output_path)
-        print(f"Saved image to {output_path}")
+        
     def upsample_nearest(self, chroma: np.ndarray, scale_y: int = 2, scale_x: int = 2) -> np.ndarray:
         upsampled = chroma.repeat(scale_y, axis=0).repeat(scale_x, axis=1)
-        print(f"Upsampled shape={upsampled.shape}")
+        
         return upsampled
 
     def assembly_block(self, blocks):
      
         reconstructed = blocks.transpose(0, 2, 1, 3).reshape(len(blocks)*8, len(blocks)*8)
-        print(f"Assembled blocks shape={reconstructed.shape}")
+        
         return reconstructed
 
 
@@ -626,7 +631,6 @@ class JPEGCompressor:
 
     def write_compressed_data(self, output_path, compressed_data):
         with open(output_path, 'wb') as f:
-            # Записываем размеры матриц
             Y_shape = compressed_data['shape']['Y']
             Cb_shape = compressed_data['shape']['Cb']
             Cr_shape = compressed_data['shape']['Cr']
@@ -634,7 +638,6 @@ class JPEGCompressor:
             f.write(struct.pack('!II', Cb_shape[0], Cb_shape[1]))
             f.write(struct.pack('!II', Cr_shape[0], Cr_shape[1]))
 
-            # Записываем длины Huffman-кодов
             codes = [
                 ('Y', 'dc_code'), ('Y', 'ac_code'),
                 ('Cb', 'dc_code'), ('Cb', 'ac_code'),
@@ -644,8 +647,6 @@ class JPEGCompressor:
                 code = compressed_data[component][code_type]
                 code_len = len(code)
                 f.write(struct.pack('!I', code_len))
-
-            # Записываем таблицы Huffman
             tables = [
                 ('Y', 'dc_table'), ('Y', 'ac_table'),
                 ('Cb', 'dc_table'), ('Cb', 'ac_table'),
@@ -662,7 +663,6 @@ class JPEGCompressor:
                     f.write(struct.pack('!B', len(code)))
                     f.write(code.encode('ascii'))
 
-            # Записываем Huffman-коды
             for component, code_type in codes:
                 code = compressed_data[component][code_type]
                 pad_bits = (8 - (len(code) % 8)) % 8
@@ -676,7 +676,6 @@ class JPEGCompressor:
 
     def read_compressed_data(self, input_path):
         with open(input_path, 'rb') as f:
-            # Читаем размеры матриц
             Y_height, Y_width = struct.unpack('!II', f.read(8))
             Cb_height, Cb_width = struct.unpack('!II', f.read(8))
             Cr_height, Cr_width = struct.unpack('!II', f.read(8))
@@ -686,7 +685,6 @@ class JPEGCompressor:
                 'Cr': (Cr_height, Cr_width)
             }
 
-            # Читаем длины Huffman-кодов
             codes = [
                 ('Y', 'dc_code'), ('Y', 'ac_code'),
                 ('Cb', 'dc_code'), ('Cb', 'ac_code'),
@@ -697,7 +695,6 @@ class JPEGCompressor:
                 code_len = struct.unpack('!I', f.read(4))[0]
                 code_lengths[f"{component}_{code_type}"] = code_len
 
-            # Читаем таблицы Huffman
             compressed_data = {'shape': shapes}
             tables = [
                 ('Y', 'dc_table'), ('Y', 'ac_table'),
@@ -717,7 +714,6 @@ class JPEGCompressor:
                     compressed_data[component] = {}
                 compressed_data[component][table_type] = table
 
-            # Читаем Huffman-коды
             for component, code_type in codes:
                 code_len = code_lengths[f"{component}_{code_type}"]
                 num_bytes = (code_len + 7) // 8
@@ -733,12 +729,9 @@ class JPEGCompressor:
 
     def compress(self, input_path, quality=50, output_bin_path="compressed_data.bin"):
         # Загрузка изображения
-        image_rgb = self.load_image(input_path)
-       
+        image_rgb = self.load_image(input_path)      
         # Преобразование в YCbCr
         image_ycbcr = self.rgb_to_ycbcr(image_rgb)
-
-        print(image_ycbcr[0:12,0:12])
         # Разделение на Y, Cb, Cr
         Y, Cb, Cr = self.sep_matrix_ycbcr(image_ycbcr)
         # Субдискретизация Cb и Cr (4:2:0)
@@ -752,34 +745,28 @@ class JPEGCompressor:
         start = time.time()
         Y_dct = self.matrix_dct(Y_blocks)
         # Y_dct = dctn(Y_blocks)
-        end = time.time()
-        print("Y_dct time:",end-start)
+        end = time.time()  
         start = time.time()
         Cb_dct = self.matrix_dct(Cb_blocks)
         # Cb_dct = dctn(Cb_blocks)
-        end = time.time()
-        print("Cb_dct time:",end-start)
+        end = time.time()    
         start = time.time()
         Cr_dct = self.matrix_dct(Cr_blocks) 
         # Cr_dct = dctn(Cr_blocks) 
-        end = time.time()
-        print("Cr_dct time:",end-start)
+        end = time.time()  
         # Квантование
         start = time.time()
         Y_quant = self.Quant(Y_dct, "Y", quality)
         Cb_quant = self.Quant(Cb_dct, "Cb", quality)
         Cr_quant = self.Quant(Cr_dct, "Cr", quality)
         end = time.time()
-        print("All Quant time:",end-start)
         # Разделение на DC и AC
-        start = time.time()
-        print(Y_quant[0][0][0:10])
+        start = time.time() 
         Y_dc, Y_ac = self.split_DC_and_AC(Y_quant)
         Cb_dc, Cb_ac = self.split_DC_and_AC(Cb_quant)
         Cr_dc, Cr_ac = self.split_DC_and_AC(Cr_quant)
         end = time.time()
-        print("All split_DC_and_AC time:",end-start)
-
+        
 
 
 
@@ -804,7 +791,6 @@ class JPEGCompressor:
             "shape": {"Y": Y.shape, "Cb": Cb.shape, "Cr": Cr.shape}
         }
         # Записываем в файл
-
         self.write_compressed_data(output_bin_path, compressed_data)
         end = time.time()
         print(f"Compress time: {end - start}")
@@ -853,19 +839,29 @@ class JPEGCompressor:
         print(f"Decompress time: {end - start}")
 
 
+
 if __name__ == "__main__":
     all_start=time.time()
-    name_arr=["preview_bw.png","preview_dithered.png","preview_grayscale.png"]
-    koef_arr=[0,20,40,60,80,100]
+    name_arr=["preview.png","preview_bw.png","preview_dithered.png","preview_grayscale.png","Lenna.png","Lenna_bw.png","Lenna_dithered.png","Lenna_grayscale.png"]
+    koef_arr=[10,20,40,60,80,100]
+
     for name in name_arr:
+        file_sizes = []
+        input_file=name
         for koef in koef_arr:
             start=time.time()
             compressor = JPEGCompressor()
             input_path = str(name)
-            output_bin_path = "compressed_"+input_path[0:-4]+"_"+str(koef)+".bin"
+            output_bin_path = "compressed_copy"+input_path[0:-4]+"_"+str(koef)+".bin"
+            output_path = "output_"+input_path[0:-4]+"_"+str(koef)+".png"
             quality = int(koef)
-            compressed_data = compressor.compress(input_path, quality=quality,output_bin_path=output_bin_path)
+            compressed_data = compressor.compress(input_path, quality=quality)
+            compressor.decompress(compressed_data, output_path, quality=quality)
             end=time.time()
             print(f"{input_path} {koef} is completed for: {end-start}")
+
+
+
+
     all_end=time.time()
     print("all time:",all_end-all_start)
